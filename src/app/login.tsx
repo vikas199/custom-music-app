@@ -5,7 +5,8 @@ import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 
 import { useJellyfin } from '@/context/JellyfinContext';
-import { DEFAULT_SERVER_URL } from '@/lib/jellyfin';
+import { DEFAULT_SERVER_URL, errorMessage } from '@/lib/jellyfin';
+import { APP_TITLE } from '@/constants/app';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -24,10 +25,7 @@ export default function LoginScreen() {
       await login(serverUrl, username, password);
       router.replace('/music');
     } catch (e) {
-      // fetch throws a TypeError when the server can't be reached at all
-      setError(e instanceof TypeError
-        ? 'Cannot reach server. Is Tailscale connected?'
-        : (e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setIsLoading(false);
     }
@@ -40,7 +38,7 @@ export default function LoginScreen() {
           <TouchableOpacity onPress={() => router.back()}>
             <Feather name="arrow-left" size={24} color="#00E5FF" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>NEON PULSE</Text>
+          <Text style={styles.headerTitle}>{APP_TITLE}</Text>
           <View style={{ width: 24 }} />
         </View>
 

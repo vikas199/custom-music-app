@@ -4,6 +4,7 @@ import { useColorScheme } from 'react-native';
 import { useState, createContext, useEffect } from 'react';
 
 import { JellyfinProvider } from '@/context/JellyfinContext';
+import { LibraryProvider } from '@/context/LibraryContext';
 import { MusicPlayerProvider } from '@/context/MusicPlayerContext';
 import GlobalPlayer from '@/components/GlobalPlayer';
 
@@ -30,10 +31,12 @@ export default function TabLayout() {
     <ThemeToggleContext.Provider value={{ isDark, toggleTheme }}>
       <ThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
         <JellyfinProvider>
-          <MusicPlayerProvider>
-            <Stack screenOptions={{ headerShown: false }} />
-            <GlobalPlayer />
-          </MusicPlayerProvider>
+          <LibraryProvider>
+            <MusicPlayerProvider>
+              <Stack screenOptions={{ headerShown: false }} />
+              <GlobalPlayer />
+            </MusicPlayerProvider>
+          </LibraryProvider>
         </JellyfinProvider>
       </ThemeProvider>
     </ThemeToggleContext.Provider>

@@ -9,6 +9,8 @@ export interface Song {
   album?: string;
   durationMillis: number;
   coverArt?: string;
+  thumbnail?: string; // small cover for lists
+  isFavorite?: boolean;
   streamUrl: string;
   headers?: Record<string, string>;
 }
@@ -26,6 +28,7 @@ interface MusicPlayerContextType {
   toggleShuffle: () => void;
   playNext: () => Promise<void>;
   playPrevious: () => Promise<void>;
+  seekTo: (millis: number) => Promise<void>;
   setMaximized: (maximized: boolean) => void;
   stopPlayback: () => Promise<void>;
 }
@@ -146,6 +149,11 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
     loadSong(orderRef.current[indexRef.current]);
   };
 
+  const seekTo = async (millis: number) => {
+    if (!activeSong) return;
+    await player.seekTo(millis / 1000);
+  };
+
   // Auto-advance when a song ends
   useEffect(() => {
     if (status.didJustFinish) playNext();
@@ -187,6 +195,7 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
         toggleShuffle,
         playNext,
         playPrevious,
+        seekTo,
         setMaximized: setIsMaximized,
         stopPlayback,
       }}

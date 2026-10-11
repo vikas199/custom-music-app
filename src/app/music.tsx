@@ -1,98 +1,175 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, RefreshControl } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { Redirect, useRouter } from 'expo-router';
 import { useMusicPlayer, Song } from '@/context/MusicPlayerContext';
 import { useJellyfin } from '@/context/JellyfinContext';
-import { fetchSongs } from '@/lib/jellyfin';
+import { useLibrary } from '@/context/LibraryContext';
+import { Playlist, errorMessage } from '@/lib/jellyfin';
+import SongRow from '@/components/SongRow';
+import PlaylistSheet from '@/components/PlaylistSheet';
+import ActionSheet from '@/components/ActionSheet';
+import { formatCount } from '@/lib/format';
+import { APP_TITLE } from '@/constants/app';
 
-const formatDuration = (millis: number) => {
-  if (!millis) return '--:--';
-  const totalSeconds = Math.floor(millis / 1000);
-  return `${Math.floor(totalSeconds / 60)}:${(totalSeconds % 60).toString().padStart(2, '0')}`;
-};
+type Tab = 'songs' | 'favorites' | 'playlists';
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'songs', label: 'All Songs' },
+  { key: 'favorites', label: 'Favorites' },
+  { key: 'playlists', label: 'Playlists' },
+];
 
 export default function MusicLibraryScreen() {
   const router = useRouter();
   const { session, isRestoring, logout } = useJellyfin();
   const { activeSong, isPlaying, playSong, shuffleAll, togglePlay } = useMusicPlayer();
 
-  const [songs, setSongs] = useState<Song[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const { songs, favorites, playlists, isLoading, error: syncError, refresh, deletePlaylist, toggleFavorite } = useLibrary();
+
+  const [tab, setTab] = useState<Tab>('songs');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  // Playlist whose ⋮ menu is open
+  const [menuPlaylist, setMenuPlaylist] = useState<Playlist | null>(null);
 
-  const loadSongs = useCallback(async () => {
-    if (!session) return;
-    setError(null);
-    try {
-      setSongs(await fetchSongs(session));
-    } catch (e) {
-      setError(e instanceof TypeError
-        ? 'Cannot reach server. Is Tailscale connected?'
-        : (e as Error).message);
-    }
-  }, [session]);
-
-  useEffect(() => {
-    loadSongs().finally(() => setIsLoading(false));
-  }, [loadSongs]);
+  const error = actionError ?? syncError;
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await loadSongs();
+    await refresh();
     setIsRefreshing(false);
   };
 
   if (isRestoring) return null;
   if (!session) return <Redirect href="/login" />;
 
-  const handlePlayPress = (song: Song) => {
+  // Tapping a song queues the list it was tapped in (All Songs or Favorites)
+  const handlePlayPress = (song: Song, queue: Song[]) => {
     if (activeSong?.id === song.id) {
       togglePlay(); // Pause/Play if it's the current song
     } else {
-      playSong(song, songs); // Play the new song, queueing the whole list
+      playSong(song, queue);
     }
   };
 
-  const renderSong = ({ item: song }: { item: Song }) => {
-    const isActive = activeSong?.id === song.id;
-    const isCurrentlyPlaying = isActive && isPlaying;
+  const confirmDelete = (playlist: Playlist) => {
+    Alert.alert(
+      `Delete "${playlist.name}"?`,
+      'The playlist will be removed. The songs stay in your library.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setActionError(null);
+              await deletePlaylist(playlist.id);
+            } catch (e) {
+              setActionError(errorMessage(e));
+            }
+          },
+        },
+      ]
+    );
+  };
 
-    return (
-      <TouchableOpacity
-        style={[styles.songRow, isActive && styles.songRowActive]}
-        activeOpacity={0.7}
-        onPress={() => handlePlayPress(song)}
-      >
-        {/* Album Art */}
-        <View style={styles.albumArtPlaceholder}>
-          {song.coverArt
-            ? <Image source={{ uri: song.coverArt }} style={styles.albumArt} />
-            : <Ionicons name="musical-notes" size={24} color={isActive ? "#00E5FF" : "#666"} />}
-        </View>
+  const refreshControl = (
+    <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} tintColor="#00E5FF" colors={['#00E5FF']} />
+  );
 
-        {/* Song Info */}
-        <View style={styles.songInfo}>
-          <Text style={[styles.songTitle, isActive && styles.songTitleActive]} numberOfLines={1}>
-            {song.title}
-          </Text>
-          <Text style={styles.songArtist} numberOfLines={1}>
-            {song.artist} <Text style={styles.divider}>|</Text> {formatDuration(song.durationMillis)}
-          </Text>
-        </View>
-
-        {/* Play/Pause Button */}
-        <TouchableOpacity style={styles.playButton} onPress={() => handlePlayPress(song)}>
-          <Ionicons
-            name={isCurrentlyPlaying ? "pause" : "play"}
-            size={22}
-            color={isActive ? "#00E5FF" : "#8B949E"}
-          />
-        </TouchableOpacity>
+  const renderPlaylist = ({ item }: { item: Playlist }) => (
+    <TouchableOpacity
+      style={styles.playlistRow}
+      activeOpacity={0.7}
+      onPress={() => router.push({ pathname: '/playlist/[id]', params: { id: item.id, name: item.name } })}
+    >
+      <View style={styles.playlistArt}>
+        {item.coverArt
+          ? <Image source={{ uri: item.coverArt }} style={styles.playlistArtImage} />
+          : <Ionicons name="musical-notes" size={24} color="#00E5FF" />}
+      </View>
+      <View style={styles.playlistInfo}>
+        <Text style={styles.playlistName} numberOfLines={1}>{item.name}</Text>
+        <Text style={styles.playlistCount}>{formatCount(item.songCount, 'song')}</Text>
+      </View>
+      <TouchableOpacity style={styles.menuButton} onPress={() => setMenuPlaylist(item)}>
+        <Feather name="more-vertical" size={24} color="#8B949E" />
       </TouchableOpacity>
+    </TouchableOpacity>
+  );
+
+  const renderContent = () => {
+    if (isLoading) {
+      return <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40 }} />;
+    }
+
+
+    if (tab === 'playlists') {
+      return (
+        <>
+          <View style={styles.listHeader}>
+            <Text style={styles.songCount}>{formatCount(playlists.length, 'playlist')}</Text>
+            <TouchableOpacity style={styles.shuffleButton} onPress={() => setIsCreateOpen(true)}>
+              <Feather name="plus" size={18} color="#090C10" />
+              <Text style={styles.shuffleText}>New</Text>
+            </TouchableOpacity>
+          </View>
+          {error && <Text style={styles.error}>{error}</Text>}
+          <FlatList
+            data={playlists}
+            keyExtractor={(p) => p.id}
+            renderItem={renderPlaylist}
+            contentContainerStyle={styles.listContainer}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={<Text style={styles.emptyText}>No playlists yet. Tap New to create one.</Text>}
+            refreshControl={refreshControl}
+          />
+        </>
+      );
+    }
+
+    const list = tab === 'favorites' ? favorites : songs;
+    return (
+      <>
+        <View style={styles.listHeader}>
+          <Text style={styles.songCount}>{formatCount(list.length, 'song')}</Text>
+          <TouchableOpacity
+            style={[styles.shuffleButton, !list.length && styles.buttonDisabled]}
+            onPress={() => shuffleAll(list)}
+            disabled={!list.length}
+          >
+            <Feather name="shuffle" size={18} color="#090C10" />
+            <Text style={styles.shuffleText}>Shuffle</Text>
+          </TouchableOpacity>
+        </View>
+        {error && <Text style={styles.error}>{error}</Text>}
+        <FlatList
+          data={list}
+          keyExtractor={(song) => song.id}
+          renderItem={({ item }) => (
+            <SongRow
+              song={item}
+              isActive={activeSong?.id === item.id}
+              isPlaying={isPlaying}
+              onPress={() => handlePlayPress(item, list)}
+              onUnfavorite={tab === 'favorites' ? () => toggleFavorite(item) : undefined}
+            />
+          )}
+          contentContainerStyle={styles.listContainer}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            tab === 'favorites'
+              ? <Text style={styles.emptyText}>No favorites yet. Tap ♡ on the now-playing screen to add one.</Text>
+              : null
+          }
+          refreshControl={refreshControl}
+        />
+      </>
     );
   };
 
@@ -103,7 +180,7 @@ export default function MusicLibraryScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Feather name="arrow-left" size={24} color="#00E5FF" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>NEON PULSE</Text>
+        <Text style={styles.headerTitle}>{APP_TITLE}</Text>
         <TouchableOpacity onPress={logout}>
           <Feather name="log-out" size={24} color="#00E5FF" />
         </TouchableOpacity>
@@ -111,42 +188,33 @@ export default function MusicLibraryScreen() {
 
       {/* Tabs */}
       <View style={styles.tabsContainer}>
-        <TouchableOpacity style={styles.tabActive}>
-          <Text style={styles.tabTextActive}>All Songs</Text>
-          <View style={styles.activeIndicator} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.tab}>
-          <Text style={styles.tabText}>Favorites</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.tab}>
-          <Text style={styles.tabText}>Playlists</Text>
-        </TouchableOpacity>
+        {TABS.map(({ key, label }) => {
+          const isActive = tab === key;
+          return (
+            <TouchableOpacity key={key} style={styles.tab} onPress={() => { setTab(key); setActionError(null); }}>
+              <Text style={isActive ? styles.tabTextActive : styles.tabText}>{label}</Text>
+              {isActive && <View style={styles.activeIndicator} />}
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
-      {/* List Header */}
-      <View style={styles.listHeader}>
-        <Text style={styles.songCount}>{songs.length} songs</Text>
-        <TouchableOpacity style={styles.shuffleButton} onPress={() => shuffleAll(songs)} disabled={!songs.length}>
-          <Feather name="shuffle" size={18} color="#090C10" />
-          <Text style={styles.shuffleText}>Shuffle</Text>
-        </TouchableOpacity>
-      </View>
+      {renderContent()}
 
-      {error && <Text style={styles.error}>{error}</Text>}
+      <PlaylistSheet
+        visible={isCreateOpen}
+        initialMode="create"
+        onClose={() => setIsCreateOpen(false)}
+      />
 
-      {/* Song List */}
-      {isLoading ? (
-        <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40 }} />
-      ) : (
-        <FlatList
-          data={songs}
-          keyExtractor={(song) => song.id}
-          renderItem={renderSong}
-          contentContainerStyle={styles.listContainer}
-          showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} tintColor="#00E5FF" colors={['#00E5FF']} />}
-        />
-      )}
+      <ActionSheet
+        visible={menuPlaylist !== null}
+        title={menuPlaylist?.name}
+        onClose={() => setMenuPlaylist(null)}
+        actions={menuPlaylist ? [
+          { label: 'Delete playlist', icon: 'trash-2', destructive: true, onPress: () => confirmDelete(menuPlaylist) },
+        ] : []}
+      />
     </SafeAreaView>
   );
 }
@@ -181,10 +249,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   tab: {
-    marginRight: 30,
-    paddingBottom: 16,
-  },
-  tabActive: {
     marginRight: 30,
     paddingBottom: 16,
     position: 'relative',
@@ -238,35 +302,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
   },
+  buttonDisabled: {
+    opacity: 0.4,
+  },
   listContainer: {
     paddingHorizontal: 24,
     paddingBottom: 120, // Give space so the global mini-player doesn't cover the bottom items
-  },
-  songRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    padding: 12,
-    borderRadius: 16,
-  },
-  songRowActive: {
-    backgroundColor: 'rgba(0, 229, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 229, 255, 0.3)',
-  },
-  albumArtPlaceholder: {
-    width: 64,
-    height: 64,
-    borderRadius: 12,
-    backgroundColor: '#161B22',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 16,
-    overflow: 'hidden',
-  },
-  albumArt: {
-    width: '100%',
-    height: '100%',
   },
   error: {
     color: '#FF2A5F',
@@ -274,27 +315,51 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     marginBottom: 16,
   },
-  songInfo: {
+  emptyText: {
+    color: '#8B949E',
+    fontSize: 16,
+    textAlign: 'center',
+    marginTop: 40,
+    paddingHorizontal: 24,
+  },
+  playlistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 16,
+    padding: 12,
+    borderRadius: 16,
+  },
+  playlistArt: {
+    width: 64,
+    height: 64,
+    borderRadius: 12,
+    backgroundColor: '#161B22',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  playlistArtImage: {
+    width: '100%',
+    height: '100%',
+  },
+  playlistInfo: {
     flex: 1,
   },
-  songTitle: {
+  playlistName: {
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 6,
   },
-  songTitleActive: {
-    color: '#00E5FF',
-  },
-  songArtist: {
+  playlistCount: {
     color: '#8B949E',
     fontSize: 14,
   },
-  divider: {
-    color: '#444',
+  menuButton: {
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  playButton: {
-    padding: 8,
-    paddingRight: 4, 
-  }
 });

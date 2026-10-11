@@ -55,6 +55,17 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Re
   }
 }
 
+// Network failures surface as TypeError or as "fetch failed: java.net.UnknownHostException..."
+const NETWORK_ERROR = /fetch failed|network request failed|unknownhost|unable to resolve host|failed to connect/i;
+
+export function errorMessage(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  if (e instanceof TypeError || NETWORK_ERROR.test(message)) {
+    return 'Cannot reach server. Is Tailscale connected?';
+  }
+  return message;
+}
+
 export function sessionHeaders(session: JellyfinSession): Record<string, string> {
   return { Authorization: authHeader(session.deviceId, session.accessToken) };
 }
@@ -105,14 +116,19 @@ interface JellyfinAudioItem {
   RunTimeTicks?: number;
   ImageTags?: { Primary?: string };
   AlbumPrimaryImageTag?: string;
+  UserData?: { IsFavorite?: boolean };
 }
 
-function coverUrl(session: JellyfinSession, item: JellyfinAudioItem): string | undefined {
+// Full-size art for the now-playing screen; small thumbnails for lists keep RAM and disk use low
+const COVER_SIZE = 600;
+const THUMBNAIL_SIZE = 160;
+
+function coverUrl(session: JellyfinSession, item: JellyfinAudioItem, size = COVER_SIZE): string | undefined {
   if (item.ImageTags?.Primary) {
-    return `${session.serverUrl}/Items/${item.Id}/Images/Primary?maxHeight=600&tag=${item.ImageTags.Primary}`;
+    return `${session.serverUrl}/Items/${item.Id}/Images/Primary?maxHeight=${size}&tag=${item.ImageTags.Primary}`;
   }
   if (item.AlbumId && item.AlbumPrimaryImageTag) {
-    return `${session.serverUrl}/Items/${item.AlbumId}/Images/Primary?maxHeight=600&tag=${item.AlbumPrimaryImageTag}`;
+    return `${session.serverUrl}/Items/${item.AlbumId}/Images/Primary?maxHeight=${size}&tag=${item.AlbumPrimaryImageTag}`;
   }
   return undefined;
 }
@@ -122,6 +138,41 @@ function streamUrl(session: JellyfinSession, itemId: string): string {
   return `${session.serverUrl}/Audio/${itemId}/stream?static=true&ApiKey=${session.accessToken}`;
 }
 
+// Authenticated request to the server with consistent error messages
+async function apiFetch(session: JellyfinSession, path: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetchWithTimeout(`${session.serverUrl}${path}`, {
+    ...init,
+    headers: { ...sessionHeaders(session), ...init.headers },
+  });
+  if (res.status === 401) throw new Error('Session expired, please log in again');
+  if (res.status === 403) throw new Error('Jellyfin did not allow this. Check the user permissions in the Jellyfin dashboard.');
+  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+  return res;
+}
+
+const SONG_FIELDS = 'Artists,AlbumArtist,Album';
+
+function toSong(session: JellyfinSession, item: JellyfinAudioItem): Song {
+  return {
+    id: item.Id,
+    title: item.Name,
+    artist: item.Artists?.join(', ') || item.AlbumArtist || 'Unknown Artist',
+    album: item.Album,
+    durationMillis: item.RunTimeTicks ? Math.round(item.RunTimeTicks / 10_000) : 0,
+    coverArt: coverUrl(session, item),
+    thumbnail: coverUrl(session, item, THUMBNAIL_SIZE),
+    isFavorite: item.UserData?.IsFavorite ?? false,
+    streamUrl: streamUrl(session, item.Id),
+    headers: sessionHeaders(session),
+  };
+}
+
+// Stream URL and auth headers hold the access token, so they're never written to disk;
+// cached songs get them back from the current session here.
+export function withPlayback(session: JellyfinSession, song: Omit<Song, 'streamUrl' | 'headers'>): Song {
+  return { ...song, streamUrl: streamUrl(session, song.id), headers: sessionHeaders(session) };
+}
+
 export async function fetchSongs(session: JellyfinSession): Promise<Song[]> {
   const params = new URLSearchParams({
     userId: session.userId,
@@ -129,24 +180,70 @@ export async function fetchSongs(session: JellyfinSession): Promise<Song[]> {
     Recursive: 'true',
     SortBy: 'SortName',
     SortOrder: 'Ascending',
-    Fields: 'Artists,AlbumArtist,Album',
+    Fields: SONG_FIELDS,
+    enableUserData: 'true',
   });
 
-  const res = await fetchWithTimeout(`${session.serverUrl}/Items?${params}`, {
-    headers: sessionHeaders(session),
-  });
-  if (res.status === 401) throw new Error('Session expired, please log in again');
-  if (!res.ok) throw new Error(`Server returned ${res.status}`);
-
+  const res = await apiFetch(session, `/Items?${params}`);
   const data: { Items: JellyfinAudioItem[] } = await res.json();
+  return data.Items.map((item) => toSong(session, item));
+}
+
+export interface Playlist {
+  id: string;
+  name: string;
+  songCount: number;
+  coverArt?: string;
+}
+
+export async function fetchPlaylists(session: JellyfinSession): Promise<Playlist[]> {
+  const params = new URLSearchParams({
+    userId: session.userId,
+    IncludeItemTypes: 'Playlist',
+    Recursive: 'true',
+    SortBy: 'SortName',
+    SortOrder: 'Ascending',
+    Fields: 'ChildCount',
+  });
+
+  const res = await apiFetch(session, `/Items?${params}`);
+  const data: { Items: (JellyfinAudioItem & { ChildCount?: number })[] } = await res.json();
   return data.Items.map((item) => ({
     id: item.Id,
-    title: item.Name,
-    artist: item.Artists?.join(', ') || item.AlbumArtist || 'Unknown Artist',
-    album: item.Album,
-    durationMillis: item.RunTimeTicks ? Math.round(item.RunTimeTicks / 10_000) : 0,
-    coverArt: coverUrl(session, item),
-    streamUrl: streamUrl(session, item.Id),
-    headers: sessionHeaders(session),
+    name: item.Name,
+    songCount: item.ChildCount ?? 0,
+    coverArt: coverUrl(session, item, THUMBNAIL_SIZE),
   }));
+}
+
+export async function fetchPlaylistSongs(session: JellyfinSession, playlistId: string): Promise<Song[]> {
+  const params = new URLSearchParams({ userId: session.userId, fields: SONG_FIELDS });
+  const res = await apiFetch(session, `/Playlists/${playlistId}/Items?${params}`);
+  const data: { Items: JellyfinAudioItem[] } = await res.json();
+  return data.Items.map((item) => toSong(session, item));
+}
+
+export async function createPlaylist(session: JellyfinSession, name: string, songIds: string[] = []): Promise<string> {
+  const res = await apiFetch(session, '/Playlists', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ Name: name.trim(), Ids: songIds, UserId: session.userId, MediaType: 'Audio' }),
+  });
+  const data: { Id: string } = await res.json();
+  return data.Id;
+}
+
+export async function addToPlaylist(session: JellyfinSession, playlistId: string, songIds: string[]): Promise<void> {
+  const params = new URLSearchParams({ ids: songIds.join(','), userId: session.userId });
+  await apiFetch(session, `/Playlists/${playlistId}/Items?${params}`, { method: 'POST' });
+}
+
+// Deletes the playlist itself; the songs in it stay in the library
+export async function deletePlaylist(session: JellyfinSession, playlistId: string): Promise<void> {
+  await apiFetch(session, `/Items/${playlistId}`, { method: 'DELETE' });
+}
+
+export async function setFavorite(session: JellyfinSession, songId: string, isFavorite: boolean): Promise<void> {
+  const params = new URLSearchParams({ userId: session.userId });
+  await apiFetch(session, `/UserFavoriteItems/${songId}?${params}`, { method: isFavorite ? 'POST' : 'DELETE' });
 }

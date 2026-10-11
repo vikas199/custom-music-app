@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Image } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image as ExpoImage } from 'expo-image';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -7,23 +7,19 @@ import Animated, {
   useSharedValue, 
   useAnimatedStyle, 
   withTiming, 
-  withSpring,
   interpolate,
+  Easing,
   Extrapolation
 } from 'react-native-reanimated';
 import { useMusicPlayer } from '@/context/MusicPlayerContext';
+import SeekBar from '@/components/SeekBar';
+import PlaylistSheet from '@/components/PlaylistSheet';
+import { useLibrary } from '@/context/LibraryContext';
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const MINI_PLAYER_HEIGHT = 72;
-
-// Helper to format ms to mm:ss
-const formatTime = (millis: number) => {
-  if (!millis) return "00:00";
-  const totalSeconds = Math.floor(millis / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-};
+const MINI_PLAYER_BOTTOM = 30;
+const MINI_PLAYER_SIDE = 16;
+const TRANSITION_MS = 320;
 
 export default function GlobalPlayer() {
   const insets = useSafeAreaInsets();
@@ -38,178 +34,188 @@ export default function GlobalPlayer() {
     toggleShuffle,
     playNext,
     playPrevious,
+    seekTo,
     setMaximized 
   } = useMusicPlayer();
+  const { isFavorite, toggleFavorite } = useLibrary();
   
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
   // 0 = minimized, 1 = maximized
   const animationProgress = useSharedValue(0);
+  // Real height of the area the player lives in. Dimensions 'window' excludes the status bar
+  // on edge-to-edge Android, which left a gap at the top, so measure it instead.
+  const hostHeight = useSharedValue(Dimensions.get('screen').height);
 
   useEffect(() => {
-    animationProgress.value = withSpring(isMaximized ? 1 : 0, {
-      damping: 20,
-      stiffness: 200,
+    // Timing instead of spring: a spring overshoots, which made the margins and corners shake
+    animationProgress.value = withTiming(isMaximized ? 1 : 0, {
+      duration: TRANSITION_MS,
+      easing: Easing.out(Easing.cubic),
     });
   }, [isMaximized]);
 
+  const onHostLayout = (event: LayoutChangeEvent) => {
+    hostHeight.value = event.nativeEvent.layout.height;
+  };
+
   const animatedContainerStyle = useAnimatedStyle(() => {
-    const minHeight = MINI_PLAYER_HEIGHT + (isMaximized ? 0 : insets.bottom + 16); // padding for floating look
-    
+    // Mini height is constant; it used to change the instant isMaximized flipped, causing a jump
+    const miniHeight = MINI_PLAYER_HEIGHT + insets.bottom + 16;
+    const lerp = (from: number, to: number) =>
+      interpolate(animationProgress.value, [0, 1], [from, to], Extrapolation.CLAMP);
+
     return {
-      height: interpolate(
-        animationProgress.value,
-        [0, 1],
-        [minHeight, SCREEN_HEIGHT],
-        Extrapolation.CLAMP
-      ),
-      bottom: interpolate(
-        animationProgress.value,
-        [0, 1],
-        [30, 0], // floats above bottom when minimized, flush when maximized
-        Extrapolation.CLAMP
-      ),
-      left: interpolate(animationProgress.value, [0, 1], [16, 0]),
-      right: interpolate(animationProgress.value, [0, 1], [16, 0]),
-      borderRadius: interpolate(animationProgress.value, [0, 1], [16, 0]),
+      height: lerp(miniHeight, hostHeight.value),
+      bottom: lerp(MINI_PLAYER_BOTTOM, 0), // floats above bottom when minimized, flush when maximized
+      left: lerp(MINI_PLAYER_SIDE, 0),
+      right: lerp(MINI_PLAYER_SIDE, 0),
+      borderRadius: lerp(16, 0),
+      borderWidth: lerp(1, 0),
     };
   });
 
+  // The two layers overlap mid-transition so there's never a moment where both are invisible
   const miniPlayerOpacity = useAnimatedStyle(() => ({
-    opacity: interpolate(animationProgress.value, [0, 0.2], [1, 0], Extrapolation.CLAMP),
-    pointerEvents: isMaximized ? 'none' : 'auto',
+    opacity: interpolate(animationProgress.value, [0, 0.3], [1, 0], Extrapolation.CLAMP),
   }));
 
   const fullPlayerOpacity = useAnimatedStyle(() => ({
-    opacity: interpolate(animationProgress.value, [0.8, 1], [0, 1], Extrapolation.CLAMP),
-    pointerEvents: isMaximized ? 'auto' : 'none',
+    opacity: interpolate(animationProgress.value, [0.15, 0.6], [0, 1], Extrapolation.CLAMP),
   }));
 
   if (!activeSong) return null;
 
   return (
-    <Animated.View style={[styles.container, animatedContainerStyle]}>
+    // Full-screen host that ignores touches itself; used to measure the real screen height
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none" onLayout={onHostLayout}>
+      <Animated.View style={[styles.container, animatedContainerStyle]}>
       
-      {/* ==================================================== */}
-      {/* MINI PLAYER (Visible when isMaximized = false) */}
-      {/* ==================================================== */}
-      <Animated.View style={[StyleSheet.absoluteFill, styles.miniPlayerContent, miniPlayerOpacity]}>
-        <TouchableOpacity 
-          style={styles.miniPlayerTouchable} 
-          onPress={() => setMaximized(true)}
-          activeOpacity={1}
+        {/* ==================================================== */}
+        {/* MINI PLAYER (Visible when isMaximized = false) */}
+        {/* ==================================================== */}
+        <Animated.View
+          style={[StyleSheet.absoluteFill, styles.miniPlayerContent, miniPlayerOpacity]}
+          pointerEvents={isMaximized ? 'none' : 'auto'}
         >
-          {/* Mini Album Art */}
-          <View style={styles.miniAlbumArt}>
-            {activeSong.coverArt
-              ? <ExpoImage source={{ uri: activeSong.coverArt }} style={styles.coverImage} />
-              : <Ionicons name="musical-notes" size={24} color="#00E5FF" />}
-          </View>
+          <TouchableOpacity 
+            style={styles.miniPlayerTouchable} 
+            onPress={() => setMaximized(true)}
+            activeOpacity={1}
+          >
+            {/* Mini Album Art */}
+            <View style={styles.miniAlbumArt}>
+              {activeSong.thumbnail ?? activeSong.coverArt
+                ? <ExpoImage source={{ uri: activeSong.thumbnail ?? activeSong.coverArt }} style={styles.coverImage} />
+                : <Ionicons name="musical-notes" size={24} color="#00E5FF" />}
+            </View>
           
-          <View style={styles.miniTextContainer}>
-            <Text style={styles.miniTitle} numberOfLines={1}>{activeSong.title}</Text>
-            <Text style={styles.miniArtist} numberOfLines={1}>{activeSong.artist}</Text>
+            <View style={styles.miniTextContainer}>
+              <Text style={styles.miniTitle} numberOfLines={1}>{activeSong.title}</Text>
+              <Text style={styles.miniArtist} numberOfLines={1}>{activeSong.artist}</Text>
+            </View>
+          </TouchableOpacity>
+
+          {/* Mini Controls */}
+          <View style={styles.miniControls}>
+            <TouchableOpacity style={styles.miniControlButton}>
+              <Feather name="cast" size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.miniControlButton} onPress={togglePlay}>
+              <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#00E5FF" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.miniControlButton} onPress={playNext}>
+              <Ionicons name="play-skip-forward" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+        </Animated.View>
 
-        {/* Mini Controls */}
-        <View style={styles.miniControls}>
-          <TouchableOpacity style={styles.miniControlButton}>
-            <Feather name="cast" size={20} color="#FFFFFF" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.miniControlButton} onPress={togglePlay}>
-            <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#00E5FF" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.miniControlButton} onPress={playNext}>
-            <Ionicons name="play-skip-forward" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
-
-      {/* ==================================================== */}
-      {/* FULL SCREEN PLAYER (Visible when isMaximized = true) */}
-      {/* ==================================================== */}
-      <Animated.View style={[StyleSheet.absoluteFill, styles.fullPlayerContent, { paddingTop: insets.top }, fullPlayerOpacity]}>
+        {/* ==================================================== */}
+        {/* FULL SCREEN PLAYER (Visible when isMaximized = true) */}
+        {/* ==================================================== */}
+        <Animated.View
+          style={[StyleSheet.absoluteFill, styles.fullPlayerContent, { paddingTop: insets.top, paddingBottom: insets.bottom }, fullPlayerOpacity]}
+          pointerEvents={isMaximized ? 'auto' : 'none'}
+        >
         
-        {/* Top Bar */}
-        <View style={styles.topBar}>
-          <TouchableOpacity onPress={() => setMaximized(false)} style={styles.iconButton}>
-            <Feather name="chevron-down" size={28} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={styles.nowPlayingHeader}>
-            <Text style={styles.nowPlayingSubtitle}>NOW PLAYING</Text>
-            <Text style={styles.nowPlayingPlaylist}>Synthwave Essentials</Text>
+          {/* Top Bar */}
+          <View style={styles.topBar}>
+            <TouchableOpacity onPress={() => setMaximized(false)} style={styles.iconButton}>
+              <Feather name="chevron-down" size={28} color="#FFFFFF" />
+            </TouchableOpacity>
+            <View style={styles.nowPlayingHeader}>
+              <Text style={styles.nowPlayingSubtitle}>NOW PLAYING</Text>
+            </View>
+            <TouchableOpacity style={styles.iconButton} onPress={() => setIsMenuOpen(true)}>
+              <Feather name="more-vertical" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity style={styles.iconButton}>
-            <Feather name="more-vertical" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
 
-        {/* Massive Album Art */}
-        <View style={styles.albumArtContainer}>
-          {/* Placeholder for massive album art matching the Claude design */}
-          <View style={styles.massiveAlbumPlaceholder}>
-            {activeSong.coverArt ? (
-              <ExpoImage source={{ uri: activeSong.coverArt }} style={styles.coverImage} />
-            ) : (
-              <>
-                <Ionicons name="musical-notes" size={100} color="#00E5FF" style={{ opacity: 0.5 }} />
-                <Text style={styles.albumArtText}>{activeSong.title}</Text>
-                <Text style={styles.albumArtSubtext}>{activeSong.artist}</Text>
-              </>
-            )}
+          {/* Massive Album Art */}
+          <View style={styles.albumArtContainer}>
+            {/* Placeholder for massive album art matching the Claude design */}
+            <View style={styles.massiveAlbumPlaceholder}>
+              {activeSong.coverArt ? (
+                <ExpoImage source={{ uri: activeSong.coverArt }} style={styles.coverImage} />
+              ) : (
+                <>
+                  <Ionicons name="musical-notes" size={100} color="#00E5FF" style={{ opacity: 0.5 }} />
+                  <Text style={styles.albumArtText}>{activeSong.title}</Text>
+                  <Text style={styles.albumArtSubtext}>{activeSong.artist}</Text>
+                </>
+              )}
+            </View>
           </View>
-        </View>
 
-        {/* Song Info & Favorite */}
-        <View style={styles.songInfoContainer}>
-          <View style={styles.songTextWrapper}>
-            <Text style={styles.fullTitle} numberOfLines={2}>{activeSong.title}</Text>
-            <Text style={styles.fullArtist}>{activeSong.artist}</Text>
+          {/* Song Info & Favorite */}
+          <View style={styles.songInfoContainer}>
+            <View style={styles.songTextWrapper}>
+              <Text style={styles.fullTitle} numberOfLines={2}>{activeSong.title}</Text>
+              <Text style={styles.fullArtist}>{activeSong.artist}</Text>
+            </View>
+            <TouchableOpacity style={styles.iconButton} onPress={() => toggleFavorite(activeSong)}>
+              <Ionicons
+                name={isFavorite(activeSong.id) ? "heart" : "heart-outline"}
+                size={28}
+                color={isFavorite(activeSong.id) ? "#00E5FF" : "#FFFFFF"}
+              />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity>
-            <Feather name="heart" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
 
-        {/* Progress Bar */}
-        <View style={styles.progressContainer}>
-          <View style={styles.progressBarBackground}>
-            <View style={[styles.progressBarFill, { width: `${durationMillis > 0 ? (positionMillis / durationMillis) * 100 : 0}%` }]} />
-            <View style={[styles.progressKnob, { left: `${durationMillis > 0 ? (positionMillis / durationMillis) * 100 : 0}%` }]} />
-          </View>
-          <View style={styles.timeRow}>
-            <Text style={styles.timeText}>{formatTime(positionMillis)}</Text>
-            <Text style={styles.timeText}>{formatTime(durationMillis)}</Text>
-          </View>
-        </View>
+          {/* Progress Bar (drag or tap to seek) */}
+          <SeekBar positionMillis={positionMillis} durationMillis={durationMillis} onSeek={seekTo} />
 
-        {/* Playback Controls */}
-        <View style={styles.playbackControls}>
-          <TouchableOpacity style={styles.controlIcon} onPress={toggleShuffle}>
-            <Feather name="shuffle" size={24} color={isShuffled ? "#00E5FF" : "#FFFFFF"} />
-            {isShuffled && <View style={styles.shuffleDot} />}
-          </TouchableOpacity>
+          {/* Playback Controls */}
+          <View style={styles.playbackControls}>
+            <TouchableOpacity style={styles.controlIcon} onPress={toggleShuffle}>
+              <Feather name="shuffle" size={24} color={isShuffled ? "#00E5FF" : "#FFFFFF"} />
+              {isShuffled && <View style={styles.shuffleDot} />}
+            </TouchableOpacity>
           
-          <TouchableOpacity style={styles.controlIcon} onPress={playPrevious}>
-            <Ionicons name="play-skip-back" size={32} color="#FFFFFF" />
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.controlIcon} onPress={playPrevious}>
+              <Ionicons name="play-skip-back" size={32} color="#FFFFFF" />
+            </TouchableOpacity>
           
-          {/* Giant Cyan Play Button */}
-          <TouchableOpacity style={styles.giantPlayButton} onPress={togglePlay}>
-            <Ionicons name={isPlaying ? "pause" : "play"} size={48} color="#090C10" style={styles.giantPlayIcon} />
-          </TouchableOpacity>
+            {/* Giant Cyan Play Button */}
+            <TouchableOpacity style={styles.giantPlayButton} onPress={togglePlay}>
+              <Ionicons name={isPlaying ? "pause" : "play"} size={48} color="#090C10" style={styles.giantPlayIcon} />
+            </TouchableOpacity>
           
-          <TouchableOpacity style={styles.controlIcon} onPress={playNext}>
-            <Ionicons name="play-skip-forward" size={32} color="#FFFFFF" />
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.controlIcon} onPress={playNext}>
+              <Ionicons name="play-skip-forward" size={32} color="#FFFFFF" />
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.controlIcon}>
-            <Feather name="rotate-cw" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity style={styles.controlIcon}>
+              <Feather name="rotate-cw" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+        </Animated.View>
 
       </Animated.View>
 
-    </Animated.View>
+      <PlaylistSheet visible={isMenuOpen} song={activeSong} onClose={() => setIsMenuOpen(false)} />
+    </View>
   );
 }
 
@@ -218,7 +224,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     backgroundColor: '#11151C', // Mini player background
     overflow: 'hidden',
-    borderWidth: 1,
     borderColor: 'rgba(0, 229, 255, 0.1)',
     shadowColor: '#00E5FF',
     shadowOffset: { width: 0, height: 10 },
@@ -305,11 +310,6 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     marginBottom: 4,
   },
-  nowPlayingPlaylist: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   albumArtContainer: {
     alignItems: 'center',
     marginBottom: 40,
@@ -357,47 +357,6 @@ const styles = StyleSheet.create({
   fullArtist: {
     color: '#8B949E',
     fontSize: 18,
-  },
-  progressContainer: {
-    marginBottom: 40,
-  },
-  progressBarBackground: {
-    height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 3,
-    marginBottom: 12,
-    position: 'relative',
-    justifyContent: 'center',
-  },
-  progressBarFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: '35%',
-    backgroundColor: '#00E5FF',
-    borderRadius: 3,
-  },
-  progressKnob: {
-    position: 'absolute',
-    left: '35%',
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#00E5FF',
-    shadowColor: '#00E5FF',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 10,
-    marginLeft: -8, // center over the edge
-  },
-  timeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  timeText: {
-    color: '#8B949E',
-    fontSize: 12,
   },
   playbackControls: {
     flexDirection: 'row',
