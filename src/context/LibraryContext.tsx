@@ -63,6 +63,7 @@ interface LibraryContextType {
   createPlaylist: (name: string, song?: Song | null) => Promise<void>;
   addToPlaylist: (playlistId: string, song: Song) => Promise<AddResult>;
   deletePlaylist: (playlistId: string) => Promise<void>;
+  deleteSong: (song: Song) => Promise<void>;
 }
 
 const LibraryContext = createContext<LibraryContextType | undefined>(undefined);
@@ -321,6 +322,26 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     update((c) => ({ ...c, playlists: c.playlists.filter((p) => p.id !== playlistId) }));
   };
 
+  // Removes the file from the server, then drops the song everywhere in the cache
+  const deleteSong = async (song: Song) => {
+    if (!session) return;
+    await Jellyfin.deleteSong(session, song.id);
+    update((c) => {
+      const { [song.id]: _removed, ...songsById } = c.songsById;
+      return {
+        ...c,
+        songsById,
+        libraryIds: c.libraryIds.filter((id) => id !== song.id),
+        favoriteIds: c.favoriteIds.filter((id) => id !== song.id),
+        playlists: c.playlists.map((p) =>
+          p.songIds?.includes(song.id)
+            ? { ...p, songIds: p.songIds.filter((id) => id !== song.id), songCount: Math.max(0, p.songCount - 1) }
+            : p
+        ),
+      };
+    });
+  };
+
   return (
     <LibraryContext.Provider
       value={{
@@ -337,6 +358,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         createPlaylist,
         addToPlaylist,
         deletePlaylist,
+        deleteSong,
       }}
     >
       {children}

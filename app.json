@@ -19,6 +19,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.vikasraj.musicapp",
+      "versionCode": 2,
       "permissions": [
         "android.permission.POST_NOTIFICATIONS"
       ]
@@ -45,7 +46,8 @@
       [
         "expo-audio",
         {
-          "enableBackgroundPlayback": true
+          "enableBackgroundPlayback": true,
+          "recordAudioAndroid": false
         }
       ],
       [
@@ -60,6 +62,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a089d9f5-463a-499d-a24f-fc95164b9c34"
+      }
+    },
+    "owner": "vikas-199"
   }
 }

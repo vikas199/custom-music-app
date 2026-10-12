@@ -247,3 +247,16 @@ export async function setFavorite(session: JellyfinSession, songId: string, isFa
   const params = new URLSearchParams({ userId: session.userId });
   await apiFetch(session, `/UserFavoriteItems/${songId}?${params}`, { method: isFavorite ? 'POST' : 'DELETE' });
 }
+
+// Deletes the song's file from the server's disk, not just the library entry.
+// Jellyfin answers 403 without the "Allow media deletion" permission, and 500 if the folder is read-only.
+export async function deleteSong(session: JellyfinSession, songId: string): Promise<void> {
+  try {
+    await apiFetch(session, `/Items/${songId}`, { method: 'DELETE' });
+  } catch (e) {
+    if (e instanceof Error && e.message === 'Server returned 500') {
+      throw new Error('Jellyfin could not delete the file. Is the music folder mounted read-write?');
+    }
+    throw e;
+  }
+}

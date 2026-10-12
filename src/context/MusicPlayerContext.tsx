@@ -1,5 +1,5 @@
 import React, { createContext, useState, useContext, ReactNode, useEffect, useRef } from 'react';
-import { requestNotificationPermissionsAsync, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { requestNotificationPermissionsAsync, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, type AudioStatus } from 'expo-audio';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 
 export interface Song {
@@ -154,10 +154,20 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
     await player.seekTo(millis / 1000);
   };
 
-  // Auto-advance when a song ends
+  // Auto-advance when a song ends. didJustFinish is true for a single status event, so listen
+  // to the player directly; reading it from hook state can miss it when renders are batched.
+  const playNextRef = useRef(playNext);
+  playNextRef.current = playNext;
   useEffect(() => {
-    if (status.didJustFinish) playNext();
-  }, [status.didJustFinish]);
+    // expo-modules-core is nested under expo, so TS can't see addListener on the player type
+    const emitter = player as unknown as {
+      addListener: (event: 'playbackStatusUpdate', cb: (s: AudioStatus) => void) => { remove: () => void };
+    };
+    const subscription = emitter.addListener('playbackStatusUpdate', (s) => {
+      if (s.didJustFinish) playNextRef.current();
+    });
+    return () => subscription.remove();
+  }, [player]);
 
   const togglePlay = async () => {
     if (!activeSong) return;

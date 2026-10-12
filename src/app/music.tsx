@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, TextInput, Keyboard, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -25,11 +25,22 @@ const TABS: { key: Tab; label: string }[] = [
 export default function MusicLibraryScreen() {
   const router = useRouter();
   const { session, isRestoring, logout } = useJellyfin();
-  const { activeSong, isPlaying, playSong, shuffleAll, togglePlay } = useMusicPlayer();
+  const { activeSong, isPlaying, isMaximized, playSong, togglePlay, stopPlayback } = useMusicPlayer();
 
-  const { songs, favorites, playlists, isLoading, error: syncError, refresh, deletePlaylist, toggleFavorite } = useLibrary();
+  const { songs, favorites, playlists, isLoading, error: syncError, refresh, deletePlaylist, deleteSong, toggleFavorite } = useLibrary();
 
   const [tab, setTab] = useState<Tab>('songs');
+  const [query, setQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const searchInputRef = useRef<TextInput>(null);
+
+  // Opening the full-screen player always drops the keyboard, whichever tap started it
+  useEffect(() => {
+    if (isMaximized) {
+      searchInputRef.current?.blur();
+      Keyboard.dismiss();
+    }
+  }, [isMaximized]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -37,6 +48,11 @@ export default function MusicLibraryScreen() {
   const [menuPlaylist, setMenuPlaylist] = useState<Playlist | null>(null);
 
   const error = actionError ?? syncError;
+
+  const closeSearch = () => {
+    setIsSearchOpen(false);
+    setQuery('');
+  };
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -47,8 +63,10 @@ export default function MusicLibraryScreen() {
   if (isRestoring) return null;
   if (!session) return <Redirect href="/login" />;
 
-  // Tapping a song queues the list it was tapped in (All Songs or Favorites)
+  // Tapping a song queues the full list it belongs to (All Songs or Favorites), even from search results
   const handlePlayPress = (song: Song, queue: Song[]) => {
+    searchInputRef.current?.blur();
+    Keyboard.dismiss();
     if (activeSong?.id === song.id) {
       togglePlay(); // Pause/Play if it's the current song
     } else {
@@ -69,6 +87,29 @@ export default function MusicLibraryScreen() {
             try {
               setActionError(null);
               await deletePlaylist(playlist.id);
+            } catch (e) {
+              setActionError(errorMessage(e));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const confirmDeleteSong = (song: Song) => {
+    Alert.alert(
+      `Delete "${song.title}"?`,
+      "This permanently deletes the song file from your Mac mini. It can't be undone.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setActionError(null);
+              await deleteSong(song);
+              if (activeSong?.id === song.id) await stopPlayback();
             } catch (e) {
               setActionError(errorMessage(e));
             }
@@ -133,20 +174,46 @@ export default function MusicLibraryScreen() {
       );
     }
 
-    const list = tab === 'favorites' ? favorites : songs;
+    const source = tab === 'favorites' ? favorites : songs;
+    const needle = query.trim().toLowerCase();
+    const list = needle
+      ? source.filter((s) => s.title.toLowerCase().includes(needle) || s.artist.toLowerCase().includes(needle))
+      : source;
     return (
       <>
         <View style={styles.listHeader}>
           <Text style={styles.songCount}>{formatCount(list.length, 'song')}</Text>
           <TouchableOpacity
-            style={[styles.shuffleButton, !list.length && styles.buttonDisabled]}
-            onPress={() => shuffleAll(list)}
-            disabled={!list.length}
+            style={[styles.shuffleButton, isSearchOpen && styles.buttonActive]}
+            onPress={() => (isSearchOpen ? closeSearch() : setIsSearchOpen(true))}
           >
-            <Feather name="shuffle" size={18} color="#090C10" />
-            <Text style={styles.shuffleText}>Shuffle</Text>
+            <Feather name={isSearchOpen ? 'x' : 'search'} size={18} color="#090C10" />
+            <Text style={styles.shuffleText}>{isSearchOpen ? 'Close' : 'Search'}</Text>
           </TouchableOpacity>
         </View>
+        {isSearchOpen && (
+          <View style={styles.searchBox}>
+            <Feather name="search" size={18} color="#8B949E" />
+            <TextInput
+              ref={searchInputRef}
+              style={styles.searchInput}
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search songs or artists"
+              placeholderTextColor="#8B949E"
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              selectionColor="#00E5FF"
+            />
+            {query.length > 0 && (
+              <TouchableOpacity onPress={() => setQuery('')} hitSlop={10}>
+                <Feather name="x" size={18} color="#8B949E" />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
         {error && <Text style={styles.error}>{error}</Text>}
         <FlatList
           data={list}
@@ -156,16 +223,21 @@ export default function MusicLibraryScreen() {
               song={item}
               isActive={activeSong?.id === item.id}
               isPlaying={isPlaying}
-              onPress={() => handlePlayPress(item, list)}
+              onPress={() => handlePlayPress(item, source)}
               onUnfavorite={tab === 'favorites' ? () => toggleFavorite(item) : undefined}
+              onDelete={() => confirmDeleteSong(item)}
             />
           )}
           contentContainerStyle={styles.listContainer}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           ListEmptyComponent={
-            tab === 'favorites'
-              ? <Text style={styles.emptyText}>No favorites yet. Tap ♡ on the now-playing screen to add one.</Text>
-              : null
+            needle
+              ? <Text style={styles.emptyText}>No songs match "{query.trim()}".</Text>
+              : tab === 'favorites'
+                ? <Text style={styles.emptyText}>No favorites yet. Tap ♡ on the now-playing screen to add one.</Text>
+                : null
           }
           refreshControl={refreshControl}
         />
@@ -191,7 +263,7 @@ export default function MusicLibraryScreen() {
         {TABS.map(({ key, label }) => {
           const isActive = tab === key;
           return (
-            <TouchableOpacity key={key} style={styles.tab} onPress={() => { setTab(key); setActionError(null); }}>
+            <TouchableOpacity key={key} style={styles.tab} onPress={() => { setTab(key); setActionError(null); closeSearch(); }}>
               <Text style={isActive ? styles.tabTextActive : styles.tabText}>{label}</Text>
               {isActive && <View style={styles.activeIndicator} />}
             </TouchableOpacity>
@@ -276,6 +348,23 @@ const styles = StyleSheet.create({
     shadowRadius: 5,
     elevation: 5,
   },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 24,
+    marginBottom: 16,
+    paddingHorizontal: 14,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: '#161B22',
+  },
+  searchInput: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 16,
+    paddingVertical: 0,
+  },
   listHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -302,8 +391,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
   },
-  buttonDisabled: {
-    opacity: 0.4,
+  buttonActive: {
+    backgroundColor: '#8B949E',
   },
   listContainer: {
     paddingHorizontal: 24,

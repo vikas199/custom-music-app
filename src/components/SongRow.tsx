@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 
 import type { Song } from '@/context/MusicPlayerContext';
@@ -18,9 +18,11 @@ interface SongRowProps {
   onPress: () => void;
   // Shows a filled heart that removes the song from favorites (Favorites tab only)
   onUnfavorite?: () => void;
+  // Shows a trash icon that deletes the song from the server (the caller confirms first)
+  onDelete?: () => void;
 }
 
-export default function SongRow({ song, isActive, isPlaying, onPress, onUnfavorite }: SongRowProps) {
+export default function SongRow({ song, isActive, isPlaying, onPress, onUnfavorite, onDelete }: SongRowProps) {
   return (
     <TouchableOpacity
       style={[styles.songRow, isActive && styles.songRowActive]}
@@ -47,6 +49,12 @@ export default function SongRow({ song, isActive, isPlaying, onPress, onUnfavori
       {onUnfavorite && (
         <TouchableOpacity style={styles.iconButton} onPress={onUnfavorite}>
           <Ionicons name="heart" size={22} color="#00E5FF" />
+        </TouchableOpacity>
+      )}
+
+      {onDelete && (
+        <TouchableOpacity style={styles.iconButton} onPress={onDelete}>
+          <Feather name="trash-2" size={20} color="#FF2A5F" />
         </TouchableOpacity>
       )}
 

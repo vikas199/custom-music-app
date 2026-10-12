@@ -44,3 +44,11 @@ example
 /android
 notes.txt
 notes*
+# local handoff notes for Claude, not pushed
+PROJECT_CONTEXT.md
+
+# songs downloaded from YouTube, never committed
+/yt-download/
+
+# personal screenshots
+Screenshot*.png

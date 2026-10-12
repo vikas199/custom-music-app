@@ -35,7 +35,8 @@ export default function GlobalPlayer() {
     playNext,
     playPrevious,
     seekTo,
-    setMaximized 
+    setMaximized,
+    stopPlayback
   } = useMusicPlayer();
   const { isFavorite, toggleFavorite } = useLibrary();
   
@@ -118,14 +119,14 @@ export default function GlobalPlayer() {
 
           {/* Mini Controls */}
           <View style={styles.miniControls}>
-            <TouchableOpacity style={styles.miniControlButton}>
-              <Feather name="cast" size={20} color="#FFFFFF" />
-            </TouchableOpacity>
             <TouchableOpacity style={styles.miniControlButton} onPress={togglePlay}>
               <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#00E5FF" />
             </TouchableOpacity>
             <TouchableOpacity style={styles.miniControlButton} onPress={playNext}>
               <Ionicons name="play-skip-forward" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.miniControlButton} onPress={stopPlayback}>
+              <Feather name="x" size={22} color="#8B949E" />
             </TouchableOpacity>
           </View>
         </Animated.View>
@@ -274,8 +275,8 @@ const styles = StyleSheet.create({
   miniControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
-    paddingRight: 8,
+    gap: 12,
+    paddingRight: 4,
   },
   miniControlButton: {
     padding: 4,
